@@ -80,7 +80,6 @@ class Point(_Point):
     #         return iter((self.x, self.y))
 
 
-
 def get_window_size() -> Point:
     w, h = shutil.get_terminal_size()
     return Point(w, h - 2)
@@ -91,7 +90,7 @@ def flow_text(text: str, width: int) -> list:
     for line in text.expandtabs(tabsize=2).splitlines():
         block_start = 0
         while block_start + width < len(line):
-            result.append(line[block_start:block_start+width])
+            result.append(line[block_start:block_start + width])
             block_start += width
         result.append(line[block_start:].ljust(width))
     return result
@@ -101,7 +100,7 @@ def clear():
     os.system(CLEAR_CMD)
 
 
-def draw(elem, state):
+def do_draw(elem, state):
     if 'frame' not in state.properties:
         state.properties['frame'] = 0
     state.properties['frame'] += 1
@@ -111,47 +110,82 @@ def draw(elem, state):
     s = ""
     for row in range(h):
         line = elem.get_content(row)
-        if row == state.pos.y:
-            line = line[:max(0, state.pos.x)] + "$" + line[state.pos.x + 1:]
+        if row == state.cursor.y:
+            line = line[:max(0, state.cursor.x)] + "$" + line[state.cursor.x + 1:]
         s += line + '\n'
 
     print(s)
 
 
-def make_buf(state):
-    s = ""
-    if state.debug:
-        s += str(state.debug) + "\n"
-    s += "\n" * state.pos.y
-    if state.pos.x > 0:
-        s += " " * state.pos.x
-    s += "#"
-    return s
-
-
 class State:
     def __init__(self):
-        self.pos = Point(0, 0)
+        self._window_size = Point(0, 0)
+        self.cursor = Point(0, 0)
         self.properties = {}
+
+    @property
+    def window_size(self):
+        return self._window_size
+
+    @window_size.setter
+    def window_size(self, size: Point):
+        # make sure cursor is inside new window
+        self.cursor = Point._make(min(now, new) for now, new in zip(self.cursor, size - 1))
+        self._window_size = size
 
 
 class Controller:
     def __init__(self):
         self.state = State()
-        self.roots = []
+        # self.roots = set()
+        self.last_roots = deque()
+        # self._active_root = None
 
-    def attach(self, root):
-        self.roots.append(root)
+    @property
+    def active_root(self):
+        return self.last_roots[-1] if len(self.last_roots) > 0 else None
+
+    @active_root.setter
+    def active_root(self, root):
+        try:
+            self.last_roots.remove(root)
+        except ValueError:
+            pass
+        self.last_roots.append(root)
         root.controller = self
 
+    def add_root(self, root):
+        if root not in self.last_roots:
+            self.last_roots.appendleft(root)
+        root.controller = self
+
+    def remove_active(self):
+        self.last_roots.pop()
+
+    def remove_root(self, root):
+        try:
+            self.last_roots.remove(root)
+        except ValueError:
+            pass
+
+    def switch_to_next_root(self):
+        try:
+            self.last_roots.appendleft(self.last_roots.pop())
+        except IndexError:
+            # happens if there are no roots
+            pass
+
     def update(self):
-        for root in self.roots:
-            win_size = get_window_size()
-            root.resize(win_size)
+        win_size = get_window_size()
+        if win_size != self.state.window_size:
+            self.state.window_size = win_size
+            for root in self.last_roots:
+                root.resize(win_size)
+        for root in self.last_roots:
             root.update()
 
     def process_user_input(self, user_input):
-        root = self.roots[0]
+        root = self.active_root
         state = self.state
         Debug.recent_inputs.append(user_input)
 
@@ -161,16 +195,18 @@ class Controller:
             pass
 
         if user_input in [b'r', b'M']:
-            state.pos = Point(min(get_window_size().x - 1, state.pos.x + 1), state.pos.y)
+            state.cursor = Point(min(get_window_size().x - 1, state.cursor.x + 1), state.cursor.y)
         elif user_input in [b'l', b'K']:
-            state.pos = Point(max(0, state.pos.x - 1), state.pos.y)
+            state.cursor = Point(max(0, state.cursor.x - 1), state.cursor.y)
         elif user_input in [b'd', b'P']:
-            state.pos = Point(state.pos.x, min(get_window_size().y - 1, state.pos.y + 1))
+            state.cursor = Point(state.cursor.x, min(get_window_size().y - 1, state.cursor.y + 1))
         elif user_input in [b'u', b'H']:
-            state.pos = Point(state.pos.x, max(0, state.pos.y - 1))
+            state.cursor = Point(state.cursor.x, max(0, state.cursor.y - 1))
+        elif user_input == b'`':
+            self.switch_to_next_root()
         elif user_input == b'\r':
             event = Event()
-            event.pos = state.pos
+            event.pos = state.cursor
             event.key = user_input
             root.action(event)
         elif user_input == b'\x1b':
@@ -180,10 +216,9 @@ class Controller:
         #     break
 
     def move_cursor_to_next(self):
-        # TODO find out in which root the cursor is
-        for root in self.roots:
-            # root.element_at(*self.state.pos).next_element()
-            elem = root.element_at(*self.state.pos)
+        root = self.last_roots[-1]
+        # root.element_at(*self.state.cursor).next_element()
+        elem = root.element_at(*self.state.cursor)
 
 
 class Element:
@@ -267,7 +302,7 @@ class Element:
         if self.event_handler:
             self.event_handler(self, event)
         else:
-            child = self.child_at(*event.pos)
+            child = self.child_at(event.pos)
             if child:
                 event.pos -= self.pos_of_child(child)
                 child.action(event)
@@ -280,16 +315,16 @@ class Element:
         else:
             return '|'
 
-    def child_at(self, x, y):
+    def child_at(self, pos: Point):
         """
         Returns the child at the specified coordinates
         which are relative to this element.
         Returns None if this element has no children or
         the given coordinates are used for border, separator, etc.
-        :param x:
-        :param y:
+        :param pos:
         :return:
         """
+        x, y = pos
         if x >= self.cur_size.x or y >= self.cur_size.y:
             raise Exception("Specified coordinates are outside of this element.")
         if len(self.children) == 0:
@@ -322,7 +357,7 @@ class Element:
                 children_sum += child.cur_size.x
             return self.children[-1]
 
-    def element_at(self, x, y):
+    def element_at(self, pos: Point):
         """
         Returns the deepest element at the specified coordinates
         which are relative to this element.
@@ -331,60 +366,16 @@ class Element:
         :param y: The y coordinate relative to this element
         :return: The deepest element at the coordinate
         """
-        child = self.child_at(x, y)
+        child = self.child_at(pos)
         if child:
             child_pos = self.pos_of_child(child)
-            return child.element_at(x - child_pos.x, y - child_pos.y)
+            return child.element_at(pos - child_pos)
         else:
             return self
 
     def with_id(self, id_str: str):
         self.id = id_str
         return self
-
-    def element_at_old(self, x, y):
-        """
-        Returns the deepest element at the specified coordinates
-        which are relative to this element.
-        The caller must ensure that this element contains the coordinates
-        :param x: The x coordinate relative to this element
-        :param y: The y coordinate relative to this element
-        :return: The deepest element at the coordinate
-        """
-        if len(self.children) == 0:
-            return self
-        if self.direction == 'vertical':
-            # find which child must write row
-            start_of_child = 0
-            for child in self.children:
-                row_after_child = start_of_child + child.cur_size.y
-                if y < row_after_child:
-                    return child.element_at(x, y - start_of_child)
-                if self.separate:
-                    if y == row_after_child and child is not self.children[-1]:
-                        return self
-                    else:
-                        start_of_child = row_after_child + 1
-                else:
-                    start_of_child = row_after_child
-            return self.children[-1].element_at(x, y - start_of_child + self.children[-1].cur_size.y)
-            # children_sum = 0
-            # for child in self.children:
-            #     if children_sum + child.cur_size.y >= y + 1:
-            #         # end of child is after y
-            #         break
-            #     children_sum += child.cur_size.y
-            # return child.element_at(x, y - (children_sum - child.cur_size.y))
-        else:
-            children_sum = 0
-            for child in self.children:
-                if children_sum + child.cur_size.x >= x + 1:
-                    # end of child is after x
-                    return child.element_at(x - (children_sum - child.cur_size.x), y)
-                children_sum += child.cur_size.x
-                if self.separate:
-                    children_sum += 1
-            return self.children[-1].element_at(x - (children_sum - self.children[-1].cur_size.x), y)
 
     def pos_of_child(self, child):
         """
@@ -485,6 +476,7 @@ class Element:
 
 class Border(Element):
     """must always have exactly one child and no content"""
+
     def __init__(self, elem, border_char='#'):
         super(Border, self).__init__()
         self.children = [elem]
@@ -502,7 +494,7 @@ class Border(Element):
 
     def resize(self, w, h):
         self.cur_size = Point(w, h)
-        self.children[0].resize(w-2, h-2)
+        self.children[0].resize(w - 2, h - 2)
 
     def get_content(self, row):
         if row == 0 or row == self.cur_size.y - 1:
@@ -535,15 +527,15 @@ class Debug:
     recent_inputs = DroppingList(10)
 
 
-def debug_info(controller, elem):
-    root = controller.roots[0]
+def debug_info(elem):
+    root = controller.active_root
     state = controller.state
     if 'frame' not in state.properties:
         state.properties['frame'] = 0
     return ['this element: {}'.format(elem),
-            'absolute cursor position: {}'.format(state.pos),
-            'elem under cursor: {}'.format(root.element_at(*state.pos)),
-            'first child under cursor: {}'.format(root.child_at(*state.pos)),
+            'absolute cursor position: {}'.format(state.cursor),
+            'elem under cursor: {}'.format(root.element_at(state.cursor)),
+            'first child under cursor: {}'.format(root.child_at(state.cursor)),
             'frame: {}'.format(state.properties['frame']),
             'debug: {}'.format(Debug.recent_inputs)]
 
@@ -581,15 +573,45 @@ class Foo:
         self.bar_fn = bar
 
 
+controller = Controller()
+
+
+def set_root(root):
+    controller.active_root = root
+
+
+def draw(root=None):
+    if root:
+        controller.add_root(root)
+    controller.update()
+    root = controller.roots[0]
+    do_draw(root, controller.state)
+
+
+def loop(root=None):
+    if root:
+        controller.active_root = root
+    while True:
+        controller.update()
+        root = controller.active_root
+        do_draw(root, controller.state)
+        user_input = getch(AUTO_REFRESH_INTERVAL)
+        if user_input:
+            try:
+                controller.process_user_input(user_input)
+            except TerminationRequestedException:
+                break
+
+
 def main():
     input("Press the return key to continue...")
     counter = Box(0)
+
     # counter = [0]
 
     def inc():
         counter.__iadd__(1)
 
-    controller = Controller()
     root = (Element()
             .with_id('.')
             .with_direction('horizontal')
@@ -602,7 +624,7 @@ def main():
                         .with_id('.1')
                         .with_child(Element()
                                     .with_id('.1.0')
-                                    .with_content(controller.state.pos))
+                                    .with_content(controller.state.cursor))
                         .with_child(Element()
                                     .with_id('.1.1')
                                     .with_content(lambda _: str(root.pos_of_child(1))))
@@ -613,17 +635,7 @@ def main():
                                     )
                         )
             )
-    controller.attach(root)
-
-    while True:
-        controller.update()
-        draw(root, controller.state)
-        user_input = getch(AUTO_REFRESH_INTERVAL)
-        if user_input:
-            try:
-                controller.process_user_input(user_input)
-            except TerminationRequestedException:
-                break
+    controller.add_root(root)
 
 
 if __name__ == '__main__':
