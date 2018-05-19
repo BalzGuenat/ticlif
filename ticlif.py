@@ -28,23 +28,6 @@ class DroppingList:
         self.values.append(x)
 
 
-class Box:
-    def __init__(self, value):
-        self.value = value
-
-    def __str__(self):
-        return str(self.value)
-
-    def __add__(self, other):
-        if isinstance(other, Box):
-            return self.value + other.value
-        else:
-            return self.value + other
-
-    def __iadd__(self, other):
-        self.value = self + other
-
-
 _Point = namedtuple('Point', ['x', 'y'])
 
 
@@ -204,6 +187,8 @@ class Controller:
             state.cursor = Point(state.cursor.x, max(0, state.cursor.y - 1))
         elif user_input == b'`':
             self.switch_to_next_root()
+        elif user_input == b'\t':
+            controller.move_cursor_to_next()
         elif user_input == b'\r':
             event = Event()
             event.pos = state.cursor
@@ -215,10 +200,24 @@ class Controller:
         #     print("exiting. input was: " + str(user_input))
         #     break
 
+    def element_under_cursor(self):
+        return self.active_root.element_at(self.state.cursor)
+
     def move_cursor_to_next(self):
-        root = self.last_roots[-1]
-        # root.element_at(*self.state.cursor).next_element()
-        elem = root.element_at(*self.state.cursor)
+        current = self.element_under_cursor()
+        next = self.element_after(current)
+        self.move_cursor_to(next)
+
+    def element_after(self, elem):
+        if elem is self.active_root:
+            # roots have no next element
+            return elem
+
+        return elem.next_sibling or self.element_after(elem.parent)
+
+    def move_cursor_to(self, elem):
+        new_position = elem.absolute_position()
+        self.state.cursor = new_position
 
 
 class Element:
@@ -233,7 +232,7 @@ class Element:
         self.separate = True
         self.fetch_content = lambda self: ""
         self.content = None
-        self.parent = None
+        self.parent: Element = None
         self.__controller = None
         self.children = []
         self.event_handler = None
@@ -260,6 +259,15 @@ class Element:
         for child in self.children:
             child.update()
 
+    def is_active_root(self):
+        return self.parent is None
+
+    def absolute_position(self) -> Point:
+        if self.is_active_root() or self.parent is None:
+            return Point(0, 0)
+
+        return self.parent.absolute_position() + self.parent.pos_of_child(self)
+
     def next_element(self):
         """
         Returns the next element after this element.
@@ -267,6 +275,16 @@ class Element:
         :return: The next element after this or None if this is the last element.
         """
         return self.parent.next_child(self)
+
+    @property
+    def next_sibling(self):
+        if self.parent is None:
+            return None
+        idx_of_next = self.parent.children.index(self) + 1
+        if not idx_of_next < len(self.parent.children):
+            return None
+        return self.parent.children[idx_of_next]
+
 
     def next_child(self, child):
         """Returns the child after the specified child"""
@@ -359,12 +377,11 @@ class Element:
 
     def element_at(self, pos: Point):
         """
-        Returns the deepest element at the specified coordinates
+        Returns the deepest element at the specified position
         which are relative to this element.
-        The caller must ensure that this element contains the coordinates
-        :param x: The x coordinate relative to this element
-        :param y: The y coordinate relative to this element
-        :return: The deepest element at the coordinate
+        The caller must ensure that this element contains the position
+        :param pos: The position relative to this element
+        :return: The deepest element at the position
         """
         child = self.child_at(pos)
         if child:
@@ -557,22 +574,6 @@ class TerminationRequestedException(Exception):
     pass
 
 
-class Foo:
-    def __init__(self):
-        self.bar_fn = lambda self: print(self)
-
-    def foo(self):
-        print(self)
-
-    @property
-    def bar(self, *args):
-        return self.bar_fn(self, *args)
-
-    @bar.setter
-    def bar(self, bar):
-        self.bar_fn = bar
-
-
 controller = Controller()
 
 
@@ -582,9 +583,9 @@ def set_root(root):
 
 def draw(root=None):
     if root:
-        controller.add_root(root)
+        controller.active_root = root
     controller.update()
-    root = controller.roots[0]
+    root = controller.active_root
     do_draw(root, controller.state)
 
 
@@ -604,38 +605,8 @@ def loop(root=None):
 
 
 def main():
-    input("Press the return key to continue...")
-    counter = Box(0)
-
-    # counter = [0]
-
-    def inc():
-        counter.__iadd__(1)
-
-    root = (Element()
-            .with_id('.')
-            .with_direction('horizontal')
-            .with_handler(lambda elem, event: inc())
-            .with_child(Element()
-                        .with_id('.0')
-                        .with_content(lambda elem: debug_info(controller, elem))
-                        )
-            .with_child(Element()
-                        .with_id('.1')
-                        .with_child(Element()
-                                    .with_id('.1.0')
-                                    .with_content(controller.state.cursor))
-                        .with_child(Element()
-                                    .with_id('.1.1')
-                                    .with_content(lambda _: str(root.pos_of_child(1))))
-                        .with_child(Element()
-                                    .with_id('.1.2:Counter')
-                                    .with_content(lambda _: "counter: {}".format(counter))
-                                    .with_handler(lambda elem, event: inc())
-                                    )
-                        )
-            )
-    controller.add_root(root)
+    print("This is a library module not intended to be run directly.")
+    print("Check out the README.md and example.py to learn how to use it.")
 
 
 if __name__ == '__main__':
