@@ -6,8 +6,11 @@ import shutil
 from enum import Enum, unique, auto
 from collections import deque, namedtuple
 
+import InputParser as ip
+from Command import Command
+
 CLEAR_CMD = 'cls'
-AUTO_REFRESH_INTERVAL = 0
+AUTO_REFRESH_INTERVAL = 1000
 
 
 def eprint(*args, **kwargs):
@@ -20,7 +23,7 @@ class DroppingList:
         self.values = deque()
 
     def __str__(self):
-        return str(self.values)
+        return '[' + ','.join([str(b) for b in self.values]) + ']'
 
     def append(self, x):
         if len(self.values) == self.capacity:
@@ -120,6 +123,7 @@ class State:
 class Controller:
     def __init__(self):
         self.state = State()
+        self.input_parser = ip.InputParser()
         # self.roots = set()
         self.last_roots = deque()
         # self._active_root = None
@@ -170,35 +174,57 @@ class Controller:
     def process_user_input(self, user_input):
         root = self.active_root
         state = self.state
-        Debug.recent_inputs.append(user_input)
+        Debug.recent_inputs_raw.append(user_input)
+        self.input_parser.push(user_input)
+        for input in self.input_parser.get():
+            Debug.recent_inputs.append(input)
+            if input == Command.RIGHT:
+                state.cursor = Point(min(get_window_size().x - 1, state.cursor.x + 1), state.cursor.y)
+            elif input == Command.LEFT:
+                state.cursor = Point(max(0, state.cursor.x - 1), state.cursor.y)
+            elif input == Command.DOWN:
+                state.cursor = Point(state.cursor.x, min(get_window_size().y - 1, state.cursor.y + 1))
+            elif input == Command.UP:
+                state.cursor = Point(state.cursor.x, max(0, state.cursor.y - 1))
+            elif input == Command.SWITCH:
+                self.switch_to_next_root()
+            elif input == Command.NEXT:
+                controller.move_cursor_to_next()
+            elif input == Command.BACK:
+                raise TerminationRequestedException
+            else:
+                event = Event()
+                event.pos = state.cursor
+                event.key = input
+                root.action(event)
 
-        if user_input == b'\x03':
-            raise KeyboardInterrupt
-        if user_input in [b'\000', b'\xe0']:
-            pass
-
-        if user_input in [b'r', b'M']:
-            state.cursor = Point(min(get_window_size().x - 1, state.cursor.x + 1), state.cursor.y)
-        elif user_input in [b'l', b'K']:
-            state.cursor = Point(max(0, state.cursor.x - 1), state.cursor.y)
-        elif user_input in [b'd', b'P']:
-            state.cursor = Point(state.cursor.x, min(get_window_size().y - 1, state.cursor.y + 1))
-        elif user_input in [b'u', b'H']:
-            state.cursor = Point(state.cursor.x, max(0, state.cursor.y - 1))
-        elif user_input == b'`':
-            self.switch_to_next_root()
-        elif user_input == b'\t':
-            controller.move_cursor_to_next()
-        elif user_input == b'\r':
-            event = Event()
-            event.pos = state.cursor
-            event.key = user_input
-            root.action(event)
-        elif user_input == b'\x1b':
-            raise TerminationRequestedException
-        # else:
-        #     print("exiting. input was: " + str(user_input))
-        #     break
+        # if user_input == b'\x03':
+        #     raise KeyboardInterrupt
+        # if user_input in [b'\000', b'\xe0']:
+        #     pass
+        #
+        # if user_input in [b'r', b'M']:
+        #     state.cursor = Point(min(get_window_size().x - 1, state.cursor.x + 1), state.cursor.y)
+        # elif user_input in [b'l', b'K']:
+        #     state.cursor = Point(max(0, state.cursor.x - 1), state.cursor.y)
+        # elif user_input in [b'd', b'P']:
+        #     state.cursor = Point(state.cursor.x, min(get_window_size().y - 1, state.cursor.y + 1))
+        # elif user_input in [b'u', b'H']:
+        #     state.cursor = Point(state.cursor.x, max(0, state.cursor.y - 1))
+        # elif user_input == b'`':
+        #     self.switch_to_next_root()
+        # elif user_input == b'\t':
+        #     controller.move_cursor_to_next()
+        # elif user_input == b'\x1b':
+        #     raise TerminationRequestedException
+        # elif user_input == b'\r' or True:
+        #     event = Event()
+        #     event.pos = state.cursor
+        #     event.key = user_input
+        #     root.action(event)
+        # # else:
+        # #     print("exiting. input was: " + str(user_input))
+        # #     break
 
     def element_under_cursor(self):
         return self.active_root.element_at(self.state.cursor)
@@ -230,7 +256,7 @@ class Element:
         self.direction = 'vertical'
         self.separator_char = None
         self.separate = True
-        self.fetch_content = lambda self: ""
+        self.fetch_content = lambda self: ''
         self.content = None
         self.parent: Element = None
         self.__controller = None
@@ -474,7 +500,7 @@ class Element:
                 joiner = self.separator() if self.separate else ""
                 return joiner.join([child.get_content(row) for child in self.children])
 
-        if not self.content:
+        if self.content is None:
             return "?" * self.cur_size.x
 
         if isinstance(self.content, list):
@@ -489,6 +515,27 @@ class Element:
 
     def with_border(self, border_char='#'):
         return Border(self, border_char)
+
+
+class Input(Element):
+    def __init__(self):
+        super(Input, self).__init__()
+        self.buffer = ''
+        super(Input, self).with_content(lambda _: self.buffer, True)
+        self.event_handler = self.default_handler
+
+    def default_handler(self, _, event):
+        if event.key == Command.DELETE_BEFORE:
+            self.buffer = self.buffer[:-1]
+        elif not isinstance(event.key, Command):
+            self.buffer += event.key
+
+    def with_content(self, content, update: bool = True):
+        super(Input, self).with_content(content, True)
+        self.buffer = self.content
+        super(Input, self).with_content(lambda _: self.buffer, True)
+        return self
+
 
 
 class Border(Element):
@@ -530,7 +577,7 @@ class EventKind(Enum):
         return name
 
 
-class Event():
+class Event:
     def __init__(self, kind: EventKind = EventKind.UNKNOWN):
         self.kind = kind
         self.pos = None
@@ -539,9 +586,13 @@ class Event():
     def at_position(self, x, y):
         self.pos = Point(x, y)
 
+    def with_key(self, k):
+        self.key = k
+
 
 class Debug:
-    recent_inputs = DroppingList(10)
+    recent_inputs_raw = DroppingList(6)
+    recent_inputs = DroppingList(12)
 
 
 def debug_info(elem):
@@ -554,7 +605,8 @@ def debug_info(elem):
             'elem under cursor: {}'.format(root.element_at(state.cursor)),
             'first child under cursor: {}'.format(root.child_at(state.cursor)),
             'frame: {}'.format(state.properties['frame']),
-            'debug: {}'.format(Debug.recent_inputs)]
+            'raw in: {}'.format(Debug.recent_inputs_raw),
+            'parsed in: {}'.format(Debug.recent_inputs)]
 
 
 def getch(timeout_millis: int = 0) -> bytes:
